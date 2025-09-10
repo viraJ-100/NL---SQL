@@ -1,0 +1,212 @@
+# WITHOUT INTENT
+# from fastapi import FastAPI
+# from pydantic import BaseModel
+# from dotenv import load_dotenv
+# import os
+# from langchain_google_genai import GoogleGenerativeAI
+# from langchain.prompts import PromptTemplate
+# from sqlalchemy import create_engine, inspect, text
+# import pandas as pd
+# from fastapi.middleware.cors import CORSMiddleware
+
+# # Load env
+# load_dotenv()
+# api_key = os.getenv("GEMINI_API_KEY")
+
+# app = FastAPI()
+
+# # Enable CORS
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],  
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# class QueryRequest(BaseModel):
+#     question: str
+
+# # LLM setup
+# llm = GoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key)
+
+# # DB setup
+# db_path = os.path.abspath("../northwind.db")
+# engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+# inspector = inspect(engine)
+
+# # Build schema text
+# schema_text = ""
+# for table_name in inspector.get_table_names():
+#     columns = inspector.get_columns(table_name)
+#     col_str = ", ".join([c["name"] for c in columns])
+#     schema_text += f"Table: {table_name} (columns: {col_str})\n"
+
+# # Prompt
+# template = """
+# You are a strict SQL generator.
+# Convert the following natural language question into a **single valid SQL query**.
+
+# Database schema:
+# {schema}
+
+# - Use only the tables and columns from the schema above.
+# - Do not add explanations or commentary.
+# - Do not wrap the query in markdown/code fences.
+# - Output only the SQL query as plain text.
+
+# Question: {question}
+
+# SQL:
+# """
+
+# prompt = PromptTemplate(
+#     input_variables=["schema", "question"],
+#     template=template
+# )
+
+# nl_to_sql_chain = prompt | llm
+
+# # ✅ Run SQL safely
+# def run_sql(sql_query: str):
+#     try:
+#         with engine.connect() as conn:
+#             result = conn.execute(text(sql_query))
+#             rows = result.fetchall()
+#             columns = result.keys()
+#         df = pd.DataFrame(rows, columns=columns)
+#         return df.to_dict(orient="records")  # convert to JSON
+#     except Exception as e:
+#         return {"error": str(e)}
+
+# @app.post("/convert")
+# async def convert_to_sql(request: QueryRequest):
+#     # Step 1: Generate SQL
+#     sql_query = nl_to_sql_chain.invoke({
+#         "schema": schema_text,
+#         "question": request.question
+#     })
+    
+#     # Step 2: Run SQL
+#     result = run_sql(sql_query)
+    
+#     return {"sql": sql_query, "result": result}
+# -----------------------------------------------------------------------------------------------------------
+# LANGCHAIN WITHOUT RUNABLE
+# from fastapi import FastAPI
+# from pydantic import BaseModel
+# from dotenv import load_dotenv
+# import os
+# from langchain_google_genai import GoogleGenerativeAI
+# from langchain.prompts import PromptTemplate
+# from sqlalchemy import create_engine, inspect, text
+# import pandas as pd
+# from fastapi.middleware.cors import CORSMiddleware
+
+# # Load env
+# load_dotenv()
+# api_key = os.getenv("GEMINI_API_KEY")
+
+# app = FastAPI()
+
+# # Enable CORS
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],  
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# class QueryRequest(BaseModel):
+#     question: str
+
+# # LLM setup
+# llm = GoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key)
+
+# # DB setup
+# db_path = os.path.abspath("../northwind.db")
+# engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+# inspector = inspect(engine)
+
+# # Build schema text
+# schema_text = ""
+# for table_name in inspector.get_table_names():
+#     columns = inspector.get_columns(table_name)
+#     col_str = ", ".join([c["name"] for c in columns])
+#     schema_text += f"Table: {table_name} (columns: {col_str})\n"
+
+# # Prompt
+# combined_template = PromptTemplate(
+#     input_variables=["schema", "question"],
+#     template="""
+# You are an expert SQL assistant.
+
+# Your tasks:
+# 1. Classify the query intent into one of two categories:
+#    - General → retrieving current/past data
+#    - Forecast → asking to predict or project future data
+# 2. Always generate a **single valid SQL query** that corresponds to the user's question.
+#    - Use only the provided schema.
+#    - Do not add explanations or comments.
+#    - If the question is about Forecast, generate the SQL needed to retrieve the historical data that would be used as input for forecasting.
+
+# Database schema:
+# {schema}
+
+# Format the output strictly as JSON:
+# {{
+#   "intent": "<General or Forecast>",
+#   "sql": "<SQL query>"
+# }}
+
+# Question: {question}
+# """
+# )
+
+# combined_chain = combined_template | llm
+
+# def run_sql(sql_query: str):
+#     try:
+#         with engine.connect() as conn:
+#             result = conn.execute(text(sql_query))
+#             rows = result.fetchall()
+#             columns = result.keys()
+#         if rows:
+#             import pandas as pd
+#             return pd.DataFrame(rows, columns=columns).to_dict(orient="records")
+#         else:
+#             return []
+#     except Exception as e:
+#         return {"error": str(e)}
+
+# @app.post("/convert")
+# async def convert_to_sql(request: QueryRequest):
+#     response = combined_chain.invoke({
+#         "schema": schema_text,
+#         "question": request.question
+#     })
+
+#     print("LLM raw response:", response)
+
+#     import json, re
+#     # Remove code fences if present
+#     cleaned_response = re.sub(r"^```json|```$", "", response.strip(), flags=re.MULTILINE).strip()
+
+#     try:
+#         parsed = json.loads(cleaned_response)
+#     except Exception as e:
+#         return {"error": f"Failed to parse JSON: {str(e)}", "raw": response}
+
+#     db_result = run_sql(parsed["sql"])
+
+#     check = {
+#         "intent": parsed["intent"],
+#         "sql": parsed["sql"],
+#         "result": db_result
+#     }
+#     print("debug", check)
+#     return check
+# -----------------------------------------------------------------------------------------------------------
+
+
